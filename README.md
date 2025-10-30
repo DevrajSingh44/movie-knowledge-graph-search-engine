@@ -70,12 +70,12 @@ ReelSense lets users:
 
 ```mermaid
 graph TD
-A[Raw Movie CSV (34k rows)] --> B[pandas Cleaning]
-B --> C[LLM Enrichment (Fill Missing Data)]
-C --> D[SentenceTransformer Embeddings]
-D --> E[Neo4j Graph Upload]
-E --> F[Semantic Search API + Visualization]
-````
+  A[Raw Movie CSV - 34k rows] --> B[pandas Cleaning]
+  B --> C[LLM Enrichment - Fill Missing Data]
+  C --> D[SentenceTransformer Embeddings]
+  D --> E[Neo4j Graph Upload]
+  E --> F[Semantic Search API + Visualization]
+```
 
 ---
 
