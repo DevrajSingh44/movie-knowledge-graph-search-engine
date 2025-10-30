@@ -1,6 +1,4 @@
-### 👉 **Project Name: GFlix – AI-Powered Movie Knowledge Graph**
-
-# 🎬 ReelSense – AI-Powered Movie Knowledge Graph
+# 🎬 GFlix – AI-Powered Movie Knowledge Graph
 
 > **GFlix** is an AI-driven semantic movie search engine that combines **Neo4j knowledge graphs** with **Large Language Models (LLMs)** to deliver context-aware movie discovery.  
 > Instead of relying on plain keyword matches, ReelSense *understands* movie plots, directors, and genres — enabling deeper, relationship-based search.
