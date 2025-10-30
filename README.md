@@ -1,5 +1,8 @@
 # 🎬 GFlix – AI-Powered Movie Knowledge Graph
 
+<img width="1919" height="912" alt="Screenshot 2025-10-31 013110" src="https://github.com/user-attachments/assets/7fb9fb87-913d-4bff-b347-cf2cc22d21a7" />
+
+
 > **GFlix** is an AI-driven semantic movie search engine that combines **Neo4j knowledge graphs** with **Large Language Models (LLMs)** to deliver context-aware movie discovery.  
 > Instead of relying on plain keyword matches, ReelSense *understands* movie plots, directors, and genres — enabling deeper, relationship-based search.
 
@@ -173,6 +176,7 @@ Go to `http://localhost:8000` or Hugging Face Space link.
 | **Caleb Chandrasekar** | 
 | **Devraj Singh**       | 
 | **Vedant Srivastava**  | 
+| **Ankita Gupta**       | 
 
 ---
 
