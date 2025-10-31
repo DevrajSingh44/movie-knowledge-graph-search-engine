@@ -115,12 +115,15 @@ elif page == "🔎 Explore Graph (Semantic)":
             # 1) Fetch candidate movies and lightweight metadata from Neo4j
             cypher = """
             MATCH (m:Movie)
-            OPTIONAL MATCH (m)-[:OF_GENRE]->(g:Genre)
-            OPTIONAL MATCH (m)-[:DIRECTED_BY]->(d:Director)
-            WITH m, collect(DISTINCT g.name) AS genres, collect(DISTINCT d.name) AS directors
+            OPTIONAL MATCH (m)-[:OF_GENRE|BELONGS_TO|IN_GENRE|HAS_GENRE]->(g:Genre)
+            OPTIONAL MATCH (m)-[:DIRECTED_BY|DIRECTED]->(d:Director)
+            WITH m,
+                 collect(DISTINCT coalesce(g.name, g.genre, g.title, g.id)) AS genres_g,
+                 collect(DISTINCT coalesce(d.name, d.fullName, d.title)) AS directors
             RETURN m.title AS title,
-                   coalesce(m.plot, m.description, m.Plot, m.Description, "") AS synopsis,
-                   genres AS genres,
+                   coalesce(m.plot, m.description, m.Plot, m.Description, m.overview, m.Summary, "") AS synopsis,
+                   genres_g AS genres_g,
+                   m.genre AS genreProp,
                    directors AS directors
             LIMIT $limit
             """
@@ -132,9 +135,29 @@ elif page == "🔎 Explore Graph (Semantic)":
                 # 2) Build texts and compute embeddings
                 model = get_embedding_model()
 
+                def combine_genres(m):
+                    # Merge relationship genres and movie property genres (string or list)
+                    genres = list({g for g in (m.get("genres_g") or []) if g})
+                    gp = m.get("genreProp")
+                    if isinstance(gp, list):
+                        genres.extend([g for g in gp if g])
+                    elif isinstance(gp, str) and gp.strip():
+                        genres.append(gp.strip())
+                    # Deduplicate and clean
+                    genres = [str(g).strip() for g in genres if str(g).strip()]
+                    # Keep unique order
+                    seen = set()
+                    uniq = []
+                    for g in genres:
+                        if g not in seen:
+                            uniq.append(g)
+                            seen.add(g)
+                    return uniq
+
                 def to_text(m):
                     title = m.get("title") or ""
-                    genres = ", ".join([g for g in (m.get("genres") or []) if g])
+                    genres_list = combine_genres(m)
+                    genres = ", ".join(genres_list)
                     directors = ", ".join([d for d in (m.get("directors") or []) if d])
                     synopsis = (m.get("synopsis") or "").strip()
                     parts = [title]
@@ -166,7 +189,7 @@ elif page == "🔎 Explore Graph (Semantic)":
                         {
                             "Title": row.get("title"),
                             "Directors": ", ".join(row.get("directors") or []),
-                            "Genres": ", ".join(row.get("genres") or []),
+                            "Genres": ", ".join(combine_genres(row)),
                             "Score": round(row_score, 4),
                         }
                     )
@@ -179,11 +202,12 @@ elif page == "🔎 Explore Graph (Semantic)":
                 rel_query = """
                 UNWIND $titles AS t
                 MATCH (m:Movie {title: t})
-                OPTIONAL MATCH (m)-[:DIRECTED_BY]->(d:Director)
-                OPTIONAL MATCH (m)-[:OF_GENRE]->(g:Genre)
+                OPTIONAL MATCH (m)-[:DIRECTED_BY|DIRECTED]->(d:Director)
+                OPTIONAL MATCH (m)-[:OF_GENRE|BELONGS_TO|IN_GENRE|HAS_GENRE]->(g:Genre)
                 RETURN m.title AS Movie,
-                       collect(DISTINCT d.name) AS Directors,
-                       collect(DISTINCT g.name) AS Genres
+                       collect(DISTINCT coalesce(d.name, d.fullName, d.title)) AS Directors,
+                       collect(DISTINCT coalesce(g.name, g.genre, g.title, g.id)) AS Genres,
+                       m.genre AS genreProp
                 """
                 rels = conn.query(rel_query, {"titles": top_titles})
 
@@ -202,10 +226,25 @@ elif page == "🔎 Explore Graph (Semantic)":
                     net.add_node(movie, label=movie, color="#fd8d3c")
 
                     for d in rec.get("Directors") or []:
+                        if not d:
+                            continue
                         net.add_node(d, label=d, color="#6baed6", shape="box")
                         net.add_edge(d, movie, title="DIRECTED_BY")
 
-                    for g in rec.get("Genres") or []:
+                    # Merge Genres from relationship and potential property
+                    genres_rel = [g for g in (rec.get("Genres") or []) if g]
+                    gp = rec.get("genreProp")
+                    if isinstance(gp, list):
+                        genres_rel.extend([g for g in gp if g])
+                    elif isinstance(gp, str) and gp.strip():
+                        genres_rel.append(gp.strip())
+
+                    seen_g = set()
+                    for g in genres_rel:
+                        g = str(g).strip()
+                        if not g or g in seen_g:
+                            continue
+                        seen_g.add(g)
                         net.add_node(g, label=g, color="#74c476", shape="ellipse")
                         net.add_edge(movie, g, title="OF_GENRE")
 
