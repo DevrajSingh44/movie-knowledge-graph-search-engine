@@ -1,9 +1,21 @@
 import streamlit as st
 import pandas as pd
-from neo4j import GraphDatabase
+import numpy as np
 from pyvis.network import Network
 import tempfile
 import os
+from sentence_transformers import SentenceTransformer
+
+# Keep a local helper to avoid import issues with hyphenated filename
+from neo4j import GraphDatabase
+
+# -------------------------
+# Embedding Model (cached)
+# -------------------------
+@st.cache_resource(show_spinner=False)
+def get_embedding_model():
+    # Small, fast, and semantically strong for search
+    return SentenceTransformer("all-MiniLM-L6-v2")
 
 # -------------------------
 # Neo4j Helper Class
@@ -31,7 +43,7 @@ st.set_page_config(
 )
 
 st.sidebar.title("🎞️ Navigation")
-page = st.sidebar.radio("Go to", ["📤 Upload Data", "🔎 Explore Graph"])
+page = st.sidebar.radio("Go to", ["📤 Upload Data", "🔎 Explore Graph (Semantic)"])
 
 # -------------------------
 # PAGE 1: Upload Data
@@ -61,14 +73,14 @@ if page == "📤 Upload Data":
 # -------------------------
 # PAGE 2: Explore Graph
 # -------------------------
-elif page == "🔎 Explore Graph":
-    st.title("🌐 Explore Movie Knowledge Graph")
+elif page == "🔎 Explore Graph (Semantic)":
+    st.title("🌐 Semantic Movie Search over the Knowledge Graph")
 
     # --- Neo4j Connection Section ---
     with st.expander("⚙️ Neo4j Connection", expanded=True):
         uri = st.text_input("Bolt URI", "neo4j+s://85d0b38b.databases.neo4j.io")
         user = st.text_input("Username", "neo4j")
-        password = st.text_input("3qkT1hM62Nngu_nW4ms3jxpwMDloICr598Zb9BotGOU", type="password", value="test")
+        password = st.text_input("Password", type="password", value="")
 
         if st.button("🔌 Connect to Neo4j"):
             try:
@@ -80,47 +92,101 @@ elif page == "🔎 Explore Graph":
     # --- If connected ---
     if "conn" in st.session_state:
         st.divider()
-        st.subheader("🎯 Search Movies by Attributes")
+        st.subheader("🧠 Natural Language Search")
 
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            search_type = st.selectbox("Search by", ["Director", "Genre"], index=0)
-            search_value = st.text_input(
-                f"Enter {search_type.lower()} name", "Christopher Nolan" if search_type == "Director" else "Action"
+        query_text = st.text_input(
+            "Describe the movies you're looking for",
+            placeholder="e.g., thought-provoking sci-fi about space exploration with a strong emotional story",
+        )
+
+        with st.expander("Advanced options"):
+            top_k = st.slider("Number of results", min_value=5, max_value=50, value=25, step=5)
+            candidate_limit = st.select_slider(
+                "Candidate pool size from Neo4j (larger = better recall, slower)",
+                options=[100, 200, 300, 500, 800, 1000],
+                value=500,
             )
 
-        with col2:
-            st.write("")
-            run_query = st.button("🔍 Search")
+        run_semantic = st.button("🔍 Search Semantically")
 
-        if run_query:
+        if run_semantic and query_text.strip():
             conn = st.session_state.conn
-            if search_type == "Director":
-                query = """
-                MATCH (m:Movie)-[:DIRECTED_BY]->(d:Director)
-                WHERE toLower(d.name) CONTAINS toLower($name)
-                RETURN m.title AS Movie, d.name AS Director, m.genre AS Genre
-                LIMIT 25
-                """
+
+            # 1) Fetch candidate movies and lightweight metadata from Neo4j
+            cypher = """
+            MATCH (m:Movie)
+            OPTIONAL MATCH (m)-[:OF_GENRE]->(g:Genre)
+            OPTIONAL MATCH (m)-[:DIRECTED_BY]->(d:Director)
+            WITH m, collect(DISTINCT g.name) AS genres, collect(DISTINCT d.name) AS directors
+            RETURN m.title AS title,
+                   coalesce(m.plot, m.description, m.Plot, m.Description, "") AS synopsis,
+                   genres AS genres,
+                   directors AS directors
+            LIMIT $limit
+            """
+            movies = conn.query(cypher, {"limit": int(candidate_limit)})
+
+            if not movies:
+                st.warning("No movies available in the graph to search.")
             else:
-                query = """
-                MATCH (m:Movie)-[:OF_GENRE]->(g:Genre)
-                WHERE toLower(g.name) CONTAINS toLower($name)
-                RETURN m.title AS Movie, g.name AS Genre, m.director AS Director
-                LIMIT 25
+                # 2) Build texts and compute embeddings
+                model = get_embedding_model()
+
+                def to_text(m):
+                    title = m.get("title") or ""
+                    genres = ", ".join([g for g in (m.get("genres") or []) if g])
+                    directors = ", ".join([d for d in (m.get("directors") or []) if d])
+                    synopsis = (m.get("synopsis") or "").strip()
+                    parts = [title]
+                    if directors:
+                        parts.append(f"Directors: {directors}")
+                    if genres:
+                        parts.append(f"Genres: {genres}")
+                    if synopsis:
+                        parts.append(synopsis)
+                    return ". ".join([p for p in parts if p])
+
+                texts = [to_text(m) for m in movies]
+                titles = [m.get("title") for m in movies]
+
+                # Normalize for cosine via dot-product
+                movie_embs = model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
+                query_emb = model.encode([query_text], normalize_embeddings=True, convert_to_numpy=True)[0]
+
+                sims = movie_embs @ query_emb  # cosine similarity due to normalization
+                order = np.argsort(-sims)
+                top_idx = order[: int(top_k)]
+
+                top_rows = []
+                top_titles = []
+                for i in top_idx:
+                    row = movies[i]
+                    row_score = float(sims[i])
+                    top_rows.append(
+                        {
+                            "Title": row.get("title"),
+                            "Directors": ", ".join(row.get("directors") or []),
+                            "Genres": ", ".join(row.get("genres") or []),
+                            "Score": round(row_score, 4),
+                        }
+                    )
+                    top_titles.append(row.get("title"))
+
+                st.success(f"✅ Found {len(top_rows)} semantically similar movie(s)")
+                st.dataframe(pd.DataFrame(top_rows), use_container_width=True)
+
+                # 3) Build Interactive Graph for top results
+                rel_query = """
+                UNWIND $titles AS t
+                MATCH (m:Movie {title: t})
+                OPTIONAL MATCH (m)-[:DIRECTED_BY]->(d:Director)
+                OPTIONAL MATCH (m)-[:OF_GENRE]->(g:Genre)
+                RETURN m.title AS Movie,
+                       collect(DISTINCT d.name) AS Directors,
+                       collect(DISTINCT g.name) AS Genres
                 """
+                rels = conn.query(rel_query, {"titles": top_titles})
 
-            results = conn.query(query, {"name": search_value})
-
-            if not results:
-                st.warning("No movies found for your search.")
-            else:
-                st.success(f"✅ Found {len(results)} movie(s)!")
-                st.dataframe(results, use_container_width=True)
-
-                # -------------------------
-                # Build Interactive Graph
-                # -------------------------
                 net = Network(
                     height="600px",
                     width="100%",
@@ -130,19 +196,18 @@ elif page == "🔎 Explore Graph":
                     directed=True,
                 )
 
-                # Add nodes and edges
-                for record in results:
-                    movie = record["Movie"]
-                    if search_type == "Director":
-                        person = record["Director"]
-                        net.add_node(person, label=person, color="#6baed6", shape="box")
-                        net.add_node(movie, label=movie, color="#fd8d3c")
-                        net.add_edge(person, movie, title="DIRECTED_BY")
-                    else:
-                        genre = record["Genre"]
-                        net.add_node(genre, label=genre, color="#74c476", shape="ellipse")
-                        net.add_node(movie, label=movie, color="#fd8d3c")
-                        net.add_edge(movie, genre, title="OF_GENRE")
+                # Add nodes and edges for each top movie
+                for rec in rels:
+                    movie = rec.get("Movie")
+                    net.add_node(movie, label=movie, color="#fd8d3c")
+
+                    for d in rec.get("Directors") or []:
+                        net.add_node(d, label=d, color="#6baed6", shape="box")
+                        net.add_edge(d, movie, title="DIRECTED_BY")
+
+                    for g in rec.get("Genres") or []:
+                        net.add_node(g, label=g, color="#74c476", shape="ellipse")
+                        net.add_edge(movie, g, title="OF_GENRE")
 
                 # Save to temp HTML file instead of .show()
                 tmp_dir = tempfile.gettempdir()
